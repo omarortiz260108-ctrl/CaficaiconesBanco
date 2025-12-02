@@ -1,0 +1,1072 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🚀 Calidero Espacial - Cloud Sync</title>
+    
+    <!-- LIBRERÍAS DE REACT Y UTILIDADES -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.rawgit.com/davidshimjs/qrcodejs/gh-pages/qrcode.min.js"></script>
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+    
+    <!-- FIREBASE SDK v9 (MODULAR) - PARA AUTENTICACIÓN Y FIRESTORE -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.10/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/9.6.10/firebase-auth.js";
+        import { getFirestore, collection, onSnapshot, doc, updateDoc, addDoc, deleteDoc, query, orderBy, setLogLevel, writeBatch, FieldValue, increment, serverTimestamp } from "https://www.gstatic.com/firebasejs/9.6.10/firebase-firestore.js";
+        
+        // Exponer módulos de Firebase al ámbito global para que React/Babel pueda usarlos
+        window.firebaseModular = {
+            initializeApp, getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged,
+            getFirestore, collection, onSnapshot, doc, updateDoc, addDoc, deleteDoc, query, orderBy, setLogLevel,
+            writeBatch, FieldValue: { increment, serverTimestamp }
+        };
+    </script>
+    
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🚀</text></svg>">
+    <style>
+        .bg-space-gradient {
+            background: linear-gradient(135deg, #1f2937, #0f172a, #1e3a8a); /* Deep Blue/Dark Gray */
+        }
+        /* Estilo para ocultar el texto de Html5Qrcode */
+        #reader a {
+            display: none !important;
+        }
+        @keyframes float {
+            0% { transform: translateY(0px); }
+            50% { transform: translateY(-20px); }
+            100% { transform: translateY(0px); }
+        }
+        .animate-float {
+            animation: float 3s ease-in-out infinite;
+        }
+    </style>
+</head>
+<body class="bg-space-gradient">
+    <div id="root"></div>
+    
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+        
+        // ==========================================================
+        // PASO 1: CONFIGURACIÓN E INICIALIZACIÓN DE FIREBASE
+        // (USANDO VARIABLES GLOBALES DEL ENTORNO)
+        // ==========================================================
+        
+        const CalideroElectronico = () => {
+            const [students, setStudents] = useState([]);
+            const [transactions, setTransactions] = useState([]);
+            const [loading, setLoading] = useState(true); 
+            const [db, setDb] = useState(null);
+            const [auth, setAuth] = useState(null);
+            const [userId, setUserId] = useState(null);
+            const [isAuthReady, setIsAuthReady] = useState(false); // Bandera de autenticación lista
+
+            // Estados de la interfaz...
+            const [isTeacherMode, setIsTeacherMode] = useState(false);
+            const [isStudentMode, setIsStudentMode] = useState(false);
+            const [currentStudent, setCurrentStudent] = useState(null);
+            const [welcomeData, setWelcomeData] = useState(null); // NUEVO ESTADO: Datos para la pantalla de bienvenida
+            const [teacherPassword, setTeacherPassword] = useState('');
+            const [studentQrCode, setStudentQrCode] = useState('');
+            const [selectedStudent, setSelectedStudent] = useState(null);
+            const [customAmount, setCustomAmount] = useState('');
+            const [customReason, setCustomReason] = useState('');
+            const [searchTerm, setSearchTerm] = useState('');
+            const [showPasswordModal, setShowPasswordModal] = useState(false);
+            const [showStudentLoginModal, setShowStudentLoginModal] = useState(false);
+            const [showTeacherQrModal, setShowTeacherQrModal] = useState(false);
+            const [showAddStudentModal, setShowAddStudentModal] = useState(false);
+            const [qrError, setQrError] = useState('');
+            const [loginError, setLoginError] = useState('');
+            const [newStudentName, setNewStudentName] = useState('');
+            const [newStudentAvatar, setNewStudentAvatar] = useState('👨‍🚀'); 
+            const [showGlobalHistoryModal, setShowGlobalHistoryModal] = useState(false); 
+            const [showQRScannerModal, setShowQRScannerModal] = useState(false);
+
+            const TEACHER_PASSWORD = "profesor123";
+
+            // --- INICIALIZACIÓN Y AUTENTICACIÓN ---
+            useEffect(() => {
+                if (typeof window.firebaseModular === 'undefined') {
+                    console.error("Firebase Modular SDK no se cargó correctamente.");
+                    return;
+                }
+                
+                // 1. Obtener Configuración
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+                let firebaseConfig = {};
+                try {
+                    firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+                } catch(e) {
+                    console.error("Error al parsear __firebase_config:", e);
+                    return;
+                }
+
+                if (Object.keys(firebaseConfig).length === 0) {
+                    console.error("Firebase Config no disponible.");
+                    return;
+                }
+                
+                // 2. Inicializar App y Servicios
+                const app = window.firebaseModular.initializeApp(firebaseConfig);
+                const firestore = window.firebaseModular.getFirestore(app);
+                const firebaseAuth = window.firebaseModular.getAuth(app);
+
+                // Opcional: Para ver logs detallados de Firestore
+                window.firebaseModular.setLogLevel('debug'); 
+
+                setDb(firestore);
+                setAuth(firebaseAuth);
+
+                // 3. Autenticación (Listener y Sign-In)
+                const unsubscribeAuth = window.firebaseModular.onAuthStateChanged(firebaseAuth, async (user) => {
+                    if (!user) {
+                        try {
+                            const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+                            
+                            if (initialAuthToken) {
+                                await window.firebaseModular.signInWithCustomToken(firebaseAuth, initialAuthToken);
+                            } else {
+                                await window.firebaseModular.signInAnonymously(firebaseAuth);
+                            }
+                            // Re-ejecutaría onAuthStateChanged con un usuario válido (anónimo o con token)
+                        } catch (error) {
+                            console.error("Error en la autenticación inicial:", error);
+                        }
+                    }
+                    
+                    // Ahora que el usuario está definitivamente autenticado (o anónimo)
+                    const currentUserId = firebaseAuth.currentUser?.uid || crypto.randomUUID();
+                    setUserId(currentUserId);
+                    setIsAuthReady(true); // La auth está lista, podemos hacer peticiones a Firestore
+                });
+
+                return () => {
+                    unsubscribeAuth();
+                };
+            }, []);
+
+            // --- LISTENERS DE FIRESTORE (REQUIERE isAuthReady) ---
+            useEffect(() => {
+                if (!isAuthReady || !db || !userId) return; 
+                
+                const { collection, onSnapshot, query, orderBy } = window.firebaseModular;
+                
+                // Path de la colección pública (recomendado para datos compartidos)
+                const PUBLIC_PATH = `artifacts/${__app_id}/public/data`;
+                
+                const studentsRef = collection(db, `${PUBLIC_PATH}/students`);
+                const transactionsRef = collection(db, `${PUBLIC_PATH}/transactions`);
+                
+                // 1. Listener para Estudiantes (Colección "students")
+                const unsubscribeStudents = onSnapshot(studentsRef, snapshot => {
+                    const fetchedStudents = snapshot.docs.map(doc => ({
+                        id: doc.id, // ID único de Firebase
+                        ...doc.data()
+                    }));
+                    fetchedStudents.sort((a, b) => a.name.localeCompare(b.name));
+                    setStudents(fetchedStudents);
+                    setLoading(false);
+                }, error => console.error("Error al obtener estudiantes. VERIFICA REGLAS DE SEGURIDAD:", error));
+
+                // 2. Listener para Transacciones (Colección "transactions")
+                const transactionsQuery = query(transactionsRef, orderBy("createdAt", "desc"));
+                const unsubscribeTransactions = onSnapshot(transactionsQuery, snapshot => {
+                    const fetchedTransactions = snapshot.docs.map(doc => ({
+                        firebaseId: doc.id, 
+                        ...doc.data(),
+                        timestamp: doc.data().createdAt ? doc.data().createdAt.toDate().toLocaleString() : 'N/A' 
+                    }));
+                    setTransactions(fetchedTransactions);
+                }, error => console.error("Error al obtener transacciones. VERIFICA REGLAS DE SEGURIDAD:", error));
+
+                // Limpieza
+                return () => {
+                    unsubscribeStudents();
+                    unsubscribeTransactions();
+                };
+            }, [isAuthReady, db, userId]); 
+
+            // Actualizar el objeto currentStudent cuando la lista de estudiantes cambia en la nube
+            useEffect(() => {
+                if (isStudentMode && currentStudent) {
+                    const updatedStudent = students.find(s => s.id === currentStudent.id);
+                    if (updatedStudent) {
+                        setCurrentStudent(updatedStudent);
+                    } else {
+                        handleStudentLogout();
+                    }
+                }
+            }, [students, isStudentMode]);
+
+
+            // ==========================================================
+            // LÓGICA DE ESCRITURA (CRUD)
+            // ==========================================================
+            
+            const generateQrCode = (firebaseId) => {
+                return `STU-${firebaseId.slice(0, 6).toUpperCase()}`; 
+            };
+            
+            const getCollectionPath = (name) => {
+                // Siempre usamos la ruta pública para que todos los usuarios vean los mismos datos
+                return window.firebaseModular.collection(db, `artifacts/${__app_id}/public/data/${name}`);
+            };
+
+            const addNewStudent = async () => {
+                if (!db || !newStudentName.trim()) {
+                    alert("Error: Base de datos no disponible o nombre vacío.");
+                    return;
+                }
+                const { addDoc, updateDoc } = window.firebaseModular;
+
+                const newStudentData = {
+                    name: newStudentName.trim().toUpperCase(),
+                    balance: 500,
+                    avatar: newStudentAvatar,
+                    qrCode: 'GENERANDO...', 
+                    createdAt: window.firebaseModular.FieldValue.serverTimestamp()
+                };
+                
+                try {
+                    const docRef = await addDoc(getCollectionPath("students"), newStudentData);
+                    
+                    // Actualizar el campo qrCode con el ID final del documento
+                    const newQrCode = generateQrCode(docRef.id);
+                    await updateDoc(docRef, { qrCode: newQrCode });
+
+                    setNewStudentName('');
+                    setNewStudentAvatar('👨‍🚀');
+                    setShowAddStudentModal(false);
+                } catch (error) {
+                    console.error("Error al alistar tripulante:", error);
+                    alert("Error al alistar tripulante. Por favor, revisa la consola y las Reglas de Seguridad de Firebase.");
+                }
+            };
+
+            const deleteStudent = async (studentId) => {
+                if (!db || !confirm('¿Estás seguro de eliminar este estudiante?')) return;
+                
+                const { doc, deleteDoc } = window.firebaseModular;
+                try {
+                    const studentDocRef = doc(db, `artifacts/${__app_id}/public/data/students`, studentId);
+                    await deleteDoc(studentDocRef);
+                    
+                    if (selectedStudent?.id === studentId) setSelectedStudent(null);
+                } catch (error) {
+                    console.error("Error al eliminar tripulante:", error);
+                    alert("Error al eliminar tripulante. Revisa las Reglas de Seguridad.");
+                }
+            };
+            
+            const resetAllBalances = async () => {
+                if (!db || !confirm('¿Estás SEGURO de reiniciar el saldo de TODOS los estudiantes a $500 Calis?')) return;
+                
+                const { writeBatch, doc } = window.firebaseModular;
+                
+                try {
+                    // Dividimos en chunks de 400 para evitar el límite de 500 ops de Firestore
+                    const chunkSize = 400; 
+                    const chunks = [];
+                    for (let i = 0; i < students.length; i += chunkSize) {
+                        chunks.push(students.slice(i, i + chunkSize));
+                    }
+
+                    // Procesamos cada chunk secuencialmente
+                    for (const chunk of chunks) {
+                        const batch = writeBatch(db);
+                        chunk.forEach(student => {
+                            const studentRef = doc(db, `artifacts/${__app_id}/public/data/students`, student.id);
+                            batch.update(studentRef, { balance: 500 });
+                        });
+                        await batch.commit();
+                    }
+
+                    alert('¡Saldos de todos los estudiantes reiniciados a $500 Calis!');
+                } catch (error) {
+                    console.error("Error al reiniciar saldos:", error);
+                    
+                    // Diagnóstico específico de errores de seguridad
+                    if (error.code === 'permission-denied') {
+                        alert("⛔ ACCESO DENEGADO: Las reglas de seguridad de Firebase bloquearon esta reinicialización masiva. Verifica si tus reglas permiten 'update' con valores fijos y no solo 'increment'.");
+                    } else {
+                        alert(`Error al reiniciar saldos: ${error.message}`);
+                    }
+                }
+            };
+
+            const addPoints = async (studentId, points, reason) => {
+                if (!db) return;
+                
+                const student = students.find(s => s.id === studentId);
+                if (!student) return;
+                
+                const { doc, updateDoc, addDoc, FieldValue } = window.firebaseModular;
+                const studentDocRef = doc(db, `artifacts/${__app_id}/public/data/students`, studentId);
+                
+                try {
+                    // 1. Actualizar el saldo de forma atómica
+                    await updateDoc(studentDocRef, { 
+                        balance: FieldValue.increment(points) 
+                    });
+                    
+                    // 2. Registrar la transacción
+                    await addDoc(getCollectionPath("transactions"), {
+                        studentId: studentId,
+                        studentName: student.name,
+                        amount: points,
+                        reason: reason,
+                        createdAt: FieldValue.serverTimestamp()
+                    });
+                } catch (error) {
+                    console.error("Error al realizar la transacción:", error);
+                    alert("Error al realizar la transacción. ¡VERIFICA LAS REGLAS DE SEGURIDAD DE FIRESTORE!");
+                }
+            };
+            
+            // ... (Resto de funciones de la UI, sin cambios significativos)
+
+            const handleStudentLogin = (code) => {
+                const studentCode = code ? code.toUpperCase() : studentQrCode.toUpperCase();
+                const student = students.find(s => s.qrCode === studentCode);
+                
+                if (student) {
+                    // 1. Mostrar pantalla de bienvenida (Efecto WOW)
+                    setWelcomeData(student);
+                    
+                    // 2. Cerrar modales de escaneo/login
+                    setShowStudentLoginModal(false); 
+                    setShowQRScannerModal(false);
+                    setStudentQrCode('');
+                    setQrError('');
+
+                    // 3. Esperar 3 segundos antes de entrar al dashboard
+                    setTimeout(() => {
+                        setCurrentStudent(student);
+                        setIsStudentMode(true);
+                        setWelcomeData(null); // Ocultar bienvenida
+                    }, 3000);
+
+                } else {
+                    setQrError(`Código de acceso "${studentCode}" no válido. Verifica el código.`);
+                }
+            };
+            
+            const handleScanSuccess = (decodedText) => {
+                setShowQRScannerModal(false); 
+                handleStudentLogin(decodedText);
+            };
+
+            const handleCustomTransaction = () => {
+                if (selectedStudent && customAmount && customReason) {
+                    const amount = parseInt(customAmount);
+                    if (isNaN(amount) || amount === 0) {
+                        alert("El monto debe ser un número positivo o negativo válido.");
+                        return;
+                    }
+
+                    addPoints(selectedStudent.id, amount, customReason);
+                    setCustomAmount('');
+                    setCustomReason('');
+                    setSelectedStudent(null);
+                } else {
+                    alert("Debes ingresar un monto y una razón.");
+                }
+            };
+            
+            const handleTeacherLogin = () => {
+                if (teacherPassword === TEACHER_PASSWORD) {
+                    setIsTeacherMode(true);
+                    setShowPasswordModal(false);
+                    setTeacherPassword('');
+                    setLoginError('');
+                } else {
+                    setLoginError('Contraseña incorrecta');
+                }
+            };
+
+            const handleTeacherLogout = () => {
+                setIsTeacherMode(false);
+                setSelectedStudent(null);
+                setShowTeacherQrModal(false); 
+            };
+
+            const handleStudentLogout = () => {
+                setIsStudentMode(false);
+                setCurrentStudent(null);
+            };
+
+            const openGlobalHistory = () => {
+                setShowGlobalHistoryModal(true);
+            };
+            
+            const openTeacherModal = () => {
+                setShowPasswordModal(true);
+            };
+
+            const openStudentLoginOptions = () => {
+                setShowStudentLoginModal(true);
+            };
+
+            const getBalanceColor = (balance) => {
+                if (balance >= 800) return "text-green-400"; 
+                if (balance >= 500) return "text-cyan-400"; 
+                if (balance >= 300) return "text-yellow-400"; 
+                return "text-orange-400"; 
+            };
+
+            const getBalanceLevel = (balance) => {
+                if (balance >= 800) return { level: "ÓRBITA ALTA", emoji: "🛰️" };
+                if (balance >= 500) return { level: "VELOCIDAD CRUCERO", emoji: "🚀" };
+                if (balance >= 300) return { level: "LISTO PARA DESPEGAR", emoji: "👨‍🚀" };
+                return { level: "EN LA PLATAFORMA", emoji: "🚧" };
+            };
+
+            const exportToTXT = () => {
+                let txtContent = "===========================================\n";
+                txtContent += "       REPORTE CALIDERO ESPACIAL\n";
+                txtContent += "===========================================\n";
+                txtContent += "Fecha: " + new Date().toLocaleString() + "\n";
+                txtContent += "Total estudiantes: " + students.length + "\n\n";
+                
+                txtContent += "LISTADO DE ESTUDIANTES:\n";
+                txtContent += "===========================================\n";
+                
+                students.forEach((student, index) => {
+                    const nivel = getBalanceLevel(student.balance);
+                    txtContent += (index + 1) + ". " + student.name + " - $" + student.balance + " - " + nivel.level + "\n";
+                });
+
+                txtContent += "\n\nHISTORIAL DE TRANSACCIONES (Últimas 50):\n";
+                txtContent += "===========================================\n";
+                transactions.slice(0, 50).forEach((transaction) => {
+                    const studentInfo = transaction.studentName ? `(${transaction.studentName})` : `(ID: ${transaction.studentId})`;
+                    txtContent += `${transaction.timestamp} - ${studentInfo}: ${transaction.amount > 0 ? '+' : ''}${transaction.amount} Calis - ${transaction.reason}\n`;
+                });
+                
+                const blob = new Blob([txtContent], { type: 'text/plain;charset=utf-8' });
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = "calidero_espacial_" + new Date().toISOString().slice(0, 10) + ".txt";
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                URL.revokeObjectURL(url);
+            };
+
+
+            const filteredStudents = students.filter(student =>
+                student.name.toLowerCase().includes(searchTerm.toLowerCase())
+            );
+
+            // Componente auxiliar para el QR (para evitar problemas de Babel/clases estáticas)
+            const QRCodeDisplay = ({ value, size = 128 }) => {
+                const qrRef = useRef(null);
+
+                useEffect(() => {
+                    if (qrRef.current && window.QRCode && value) {
+                        qrRef.current.innerHTML = ''; 
+                        
+                        new window.QRCode(qrRef.current, {
+                            text: value,
+                            width: size,
+                            height: size,
+                            colorDark : "#000000",
+                            colorLight : "#ffffff",
+                            correctLevel : window.QRCode.CorrectLevel.H
+                        });
+                    }
+                }, [value, size]);
+
+                return <div ref={qrRef} className="p-2 bg-white rounded-lg shadow-xl inline-block"></div>;
+            };
+            
+            // Componente auxiliar para el Escáner QR
+            const QRScannerModal = ({ onScanSuccess, onClose }) => {
+                const qrCodeRef = useRef(null);
+
+                useEffect(() => {
+                    let html5QrcodeScanner;
+                    if (qrCodeRef.current && window.Html5Qrcode) {
+                        html5QrcodeScanner = new window.Html5Qrcode("reader");
+
+                        const config = {
+                            fps: 10,
+                            qrbox: { width: 250, height: 250 },
+                            disableFlip: false, 
+                        };
+
+                        const onScanError = (errorMessage) => {
+                            // console.error("Error al escanear: ", errorMessage); 
+                        };
+
+                        html5QrcodeScanner.start(
+                            { facingMode: "environment" }, 
+                            config,
+                            onScanSuccess,
+                            onScanError
+                        ).catch(err => {
+                            console.error("No se pudo iniciar el escáner (puede que no haya cámara):", err);
+                        });
+                    }
+
+                    return () => {
+                        if (html5QrcodeScanner && html5QrcodeScanner.isScanning) {
+                            html5QrcodeScanner.stop().catch(err => console.error("Error al detener scanner:", err));
+                        }
+                    };
+                }, [onScanSuccess]);
+
+                return (
+                    <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+                        <div className="bg-white rounded-2xl p-8 max-w-lg w-full mx-4 shadow-2xl text-center">
+                            <h3 className="text-2xl font-bold text-gray-800 mb-4">📸 Escanea tu Código de Acceso QR</h3>
+                            <div className="flex justify-center mb-4">
+                                <div id="reader" ref={qrCodeRef} className="w-full max-w-xs md:max-w-sm rounded-lg overflow-hidden border-4 border-cyan-500"></div>
+                            </div>
+                            <p className="text-sm text-gray-600 mb-6">Asegúrate de que tu cámara esté enfocando claramente el código QR.</p>
+                            <button
+                                onClick={onClose}
+                                className="w-full bg-gray-500 hover:bg-gray-600 text-white py-3 rounded-xl font-semibold transition-colors duration-200 text-lg"
+                            >
+                                ❌ Cerrar Escáner
+                            </button>
+                        </div>
+                    </div>
+                );
+            };
+
+            if (loading || !isAuthReady) {
+                return (
+                    <div className="min-h-screen flex items-center justify-center">
+                        <div className="text-white text-3xl font-bold animate-pulse flex items-center gap-4">
+                            <span className="text-5xl">🛰️</span> Conectando al Módulo de Vuelo...
+                        </div>
+                    </div>
+                );
+            }
+
+            // ==========================================================
+            // VISTA PRINCIPAL
+            // ==========================================================
+            return (
+                <div className="min-h-screen bg-space-gradient p-4">
+                    <div className="max-w-7xl mx-auto">
+                        
+                        {/* Botones de Acceso */}
+                        <div className="fixed top-4 right-4 z-50 flex flex-col gap-2">
+                            {!isTeacherMode && !isStudentMode ? (
+                                <>
+                                    <button
+                                        onClick={openTeacherModal}
+                                        className="bg-orange-600 hover:bg-orange-700 text-white px-6 py-3 rounded-2xl font-bold text-lg shadow-2xl border-4 border-white/50 hover:scale-110 transition-all duration-200 animate-pulse"
+                                    >
+                                        👨‍🏫 MODO COMANDANTE
+                                    </button>
+                                    <button
+                                        onClick={openStudentLoginOptions}
+                                        className="bg-cyan-600 hover:bg-cyan-700 text-white px-6 py-3 rounded-2xl font-bold text-lg shadow-2xl border-4 border-white/50 hover:scale-110 transition-all duration-200"
+                                    >
+                                        🛰️ ACCESO TRIPULANTE
+                                    </button>
+                                </>
+                            ) : isTeacherMode ? (
+                                <button
+                                    onClick={handleTeacherLogout}
+                                    className="bg-red-600 hover:bg-red-700 text-white px-6 py-4 rounded-2xl font-bold text-xl shadow-2xl border-4 border-white/50 hover:scale-110 transition-all duration-200"
+                                >
+                                    ❌ SALIR MODO COMANDANTE
+                                </button>
+                            ) : (
+                                <button
+                                    onClick={handleStudentLogout}
+                                    className="bg-purple-600 hover:bg-purple-700 text-white px-6 py-4 rounded-2xl font-bold text-xl shadow-2xl border-4 border-white/50 hover:scale-110 transition-all duration-200"
+                                >
+                                    🚪 CERRAR SESIÓN
+                                </button>
+                            )}
+                        </div>
+
+                        {/* Panel de Modo Tripulante (Estudiante) */}
+                        {isStudentMode && currentStudent && (
+                            <div className="mt-20">
+                                <h2 className="text-3xl font-extrabold text-white mb-6 text-center">
+                                    👋 Bienvenido, Tripulante {currentStudent.avatar}
+                                </h2>
+                                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+                                    
+                                    {/* Panel de Balance */}
+                                    <div className="lg:col-span-2 bg-white/10 backdrop-blur-sm rounded-2xl p-8 border border-white/20">
+                                        <div className="text-white/70 text-sm font-semibold mb-1">COMBUSTIBLE ACTUAL (CALIS)</div>
+                                        <div className={`font-extrabold ${getBalanceColor(currentStudent.balance)} mb-4`}>
+                                            <span className="text-4xl">$</span>{currentStudent.balance}
+                                        </div>
+                                        <div className="text-white/90 text-lg">
+                                            {getBalanceLevel(currentStudent.balance).emoji} {getBalanceLevel(currentStudent.balance).level}
+                                        </div>
+                                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
+                                            <div className="bg-white/10 rounded-2xl p-4 backdrop-blur-sm">
+                                                <div className="text-white/70 text-sm">📊 Nivel de Vuelo</div>
+                                                <div className="text-white text-lg font-semibold">
+                                                    {getBalanceLevel(currentStudent.balance).level}
+                                                </div>
+                                            </div>
+                                            <div className="bg-white/10 rounded-2xl p-4 backdrop-blur-sm">
+                                                <div className="text-white/70 text-sm">🎯 Meta Orbital</div>
+                                                <div className="text-white text-lg font-semibold"> $800 </div>
+                                            </div>
+                                            <div className="bg-white/10 rounded-2xl p-4 backdrop-blur-sm">
+                                                <div className="text-white/70 text-sm">📈 Combustible</div>
+                                                <div className="text-white text-lg font-semibold"> {Math.min(100, Math.round((currentStudent.balance / 800) * 100))}% </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    {/* Panel de Código QR del Estudiante */}
+                                    <div className="lg:col-span-1 bg-white/10 backdrop-blur-sm rounded-2xl p-6 border border-white/20 flex flex-col items-center justify-center">
+                                        <h3 className="text-xl font-bold text-white mb-4">Tu Código de Acceso QR</h3>
+                                        <div className="mb-4">
+                                            <QRCodeDisplay value={currentStudent.qrCode} size={150} />
+                                        </div>
+                                        <div className="text-white/70 text-sm">
+                                            Código de Vuelo: <span className="font-mono text-cyan-400 font-semibold text-lg">{currentStudent.qrCode}</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+
+                                <div className="bg-white/10 backdrop-blur-sm rounded-2xl p-6 border border-white/20">
+                                    <h3 className="text-2xl font-bold text-white mb-4"> 📜 Bitácora Personal de Misión </h3>
+                                    <div className="space-y-3 max-h-96 overflow-y-auto">
+                                        {transactions
+                                            .filter(t => t.studentId === currentStudent.id)
+                                            .slice(0, 20)
+                                            .map((transaction, index) => (
+                                                <div key={transaction.firebaseId} className="bg-white/5 rounded-xl p-4 border border-white/10">
+                                                    <div className="flex justify-between items-center">
+                                                        <div>
+                                                            <div className="text-white font-medium">{transaction.reason}</div>
+                                                            <div className="text-white/60 text-sm">{transaction.timestamp}</div>
+                                                        </div>
+                                                        <div className={`text-xl font-bold ${transaction.amount > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                                                            {transaction.amount > 0 ? '+' : ''}${transaction.amount}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                        ))}
+                                        {transactions.filter(t => t.studentId === currentStudent.id).length === 0 && (
+                                            <div className="text-center text-white/50 py-8">
+                                                <div className="text-4xl mb-2">✨</div>
+                                                <div>¡Estás en blanco! Empieza a ganar Calis.</div>
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+
+                            </div>
+                        )}
+
+                        {/* Panel de Gestión de Estudiantes - Solo Docente */}
+                        {isTeacherMode && (
+                            <>
+                                <div className="bg-white/10 backdrop-blur-sm rounded-xl p-4 mb-6 flex flex-wrap justify-between items-center gap-4 mt-20">
+                                    <div className="text-white font-semibold flex items-center gap-2">
+                                        👨‍🚀 Gestión de Tripulación - Total: {students.length}
+                                    </div>
+                                    <div className="flex gap-3 flex-wrap">
+                                        <input
+                                            type="text"
+                                            placeholder="Buscar tripulante por nombre..."
+                                            value={searchTerm}
+                                            onChange={(e) => setSearchTerm(e.target.value)}
+                                            className="px-4 py-2 rounded-xl bg-white/20 text-white placeholder-white/70 focus:outline-none focus:ring-2 focus:ring-cyan-500 transition-all"
+                                        />
+                                        <button
+                                            onClick={() => setShowAddStudentModal(true)}
+                                            className="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-xl font-semibold flex items-center gap-2 transition-colors duration-200"
+                                        >
+                                            ➕ Alistar Tripulante
+                                        </button>
+                                        <button
+                                            onClick={openGlobalHistory}
+                                            className="bg-indigo-500 hover:bg-indigo-600 text-white px-4 py-2 rounded-xl font-semibold flex items-center gap-2 transition-colors duration-200"
+                                        >
+                                            📜 Historial Global
+                                        </button>
+                                        <button
+                                            onClick={resetAllBalances}
+                                            className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-xl font-semibold flex items-center gap-2 transition-colors duration-200"
+                                        >
+                                            ♻️ Reiniciar Saldos
+                                        </button>
+                                        <button
+                                            onClick={exportToTXT}
+                                            className="bg-yellow-500 hover:bg-yellow-600 text-white px-4 py-2 rounded-xl font-semibold flex items-center gap-2 transition-colors duration-200"
+                                        >
+                                            💾 Exportar TXT
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Resumen Rápido de Niveles */}
+                                <div className="grid grid-cols-4 gap-4 mb-6">
+                                    <div className="bg-green-500/20 rounded-xl p-4 text-center">
+                                        <div className="text-green-400 text-2xl font-bold">
+                                            {students.filter(s => s.balance >= 800).length}
+                                        </div>
+                                        <div className="text-green-300 text-sm">🛰️ Órbita Alta</div>
+                                    </div>
+                                    <div className="bg-cyan-500/20 rounded-xl p-4 text-center">
+                                        <div className="text-cyan-400 text-2xl font-bold">
+                                            {students.filter(s => s.balance >= 500 && s.balance < 800).length}
+                                        </div>
+                                        <div className="text-cyan-300 text-sm">🚀 Velocidad Crucero</div>
+                                    </div>
+                                    <div className="bg-yellow-500/20 rounded-xl p-4 text-center">
+                                        <div className="text-yellow-400 text-2xl font-bold">
+                                            {students.filter(s => s.balance >= 300 && s.balance < 500).length}
+                                        </div>
+                                        <div className="text-yellow-300 text-sm">👨‍🚀 Listos para Despegue</div>
+                                    </div>
+                                    <div className="bg-orange-500/20 rounded-xl p-4 text-center">
+                                        <div className="text-orange-400 text-2xl font-bold">
+                                            {students.filter(s => s.balance < 300).length}
+                                        </div>
+                                        <div className="text-orange-300 text-sm">🚧 En la Plataforma</div>
+                                    </div>
+                                </div>
+
+
+                                {/* Lista de Estudiantes */}
+                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                                    {filteredStudents.length > 0 ? (
+                                        filteredStudents.map(student => (
+                                            <div key={student.id} className="bg-white/5 rounded-xl p-4 border border-white/10 hover:bg-white/10 transition-colors duration-200">
+                                                <div className="flex items-center justify-between mb-3">
+                                                    <div className="text-3xl">{student.avatar}</div>
+                                                    <button onClick={() => deleteStudent(student.id)} className="text-red-400 hover:text-red-500 text-lg">🗑️</button>
+                                                </div>
+                                                <h3 className="text-white text-lg font-bold mb-1 truncate">{student.name}</h3>
+                                                <div className="text-sm text-white/60 mb-3">Código: <span className="font-mono">{student.qrCode}</span></div>
+                                                <div className={`text-3xl font-extrabold ${getBalanceColor(student.balance)} mb-3`}>
+                                                    ${student.balance} <span className="text-base text-white/70">Calis</span>
+                                                </div>
+                                                
+                                                {/* Botones de Transacción Rápida */}
+                                                <div className="flex flex-wrap gap-2 mb-3">
+                                                    <button onClick={() => addPoints(student.id, 50, "Misión Cumplida (Tarea)")} className="bg-green-500 hover:bg-green-600 text-white px-3 py-2 rounded-xl text-sm font-medium transition-all duration-200 hover:scale-105" > +50 Misión </button>
+                                                    <button onClick={() => addPoints(student.id, 100, "Colaboración Estelar")} className="bg-blue-500 hover:bg-blue-600 text-white px-3 py-2 rounded-xl text-sm font-medium transition-all duration-200 hover:scale-105" > +100 Colab. </button>
+                                                    <button onClick={() => addPoints(student.id, -50, "Multa por Distracción Galáctica")} className="bg-red-500 hover:bg-red-600 text-white px-3 py-2 rounded-xl text-sm font-medium transition-all duration-200 hover:scale-105" > -50 Multa </button>
+                                                    {/* Nuevo botón para mostrar QR en el listado */}
+                                                    <button 
+                                                        onClick={() => {setSelectedStudent(student); setShowTeacherQrModal(true);}}
+                                                        className="bg-indigo-500 hover:bg-indigo-600 text-white px-3 py-2 rounded-xl text-sm font-medium transition-all duration-200 hover:scale-105" 
+                                                    >
+                                                        🔍 Mostrar QR
+                                                    </button>
+                                                </div>
+
+
+                                                {/* Botón y Panel de Transacción Manual */}
+                                                <button
+                                                    onClick={() => {
+                                                        setSelectedStudent(selectedStudent?.id === student.id ? null : student);
+                                                        setCustomAmount(''); 
+                                                        setCustomReason(''); 
+                                                    }}
+                                                    className="w-full bg-gradient-to-r from-orange-500 to-red-500 hover:from-orange-600 hover:to-red-600 text-white py-2 rounded-xl font-medium transition-all duration-200 hover:scale-105"
+                                                >
+                                                    {selectedStudent?.id === student.id ? 'Cancelar' : 'Transacción Manual'}
+                                                </button>
+
+                                                {selectedStudent?.id === student.id && (
+                                                    <div className="mt-3 p-3 bg-white/10 rounded-lg">
+                                                        <h4 className="text-white text-sm font-semibold mb-2">Transacción Manual</h4>
+                                                        <input
+                                                            type="number"
+                                                            placeholder="Monto (+/-)"
+                                                            value={customAmount}
+                                                            onChange={(e) => setCustomAmount(e.target.value)}
+                                                            className="w-full px-3 py-2 mb-2 rounded-lg bg-white/20 text-white placeholder-white/70 focus:outline-none text-sm"
+                                                        />
+                                                        <input
+                                                            type="text"
+                                                            placeholder="Razón/Concepto"
+                                                            value={customReason}
+                                                            onChange={(e) => setCustomReason(e.target.value)}
+                                                            className="w-full px-3 py-2 mb-2 rounded-lg bg-white/20 text-white placeholder-white/70 focus:outline-none text-sm"
+                                                        />
+                                                        <button
+                                                            onClick={handleCustomTransaction}
+                                                            className="w-full bg-yellow-500 hover:bg-yellow-600 text-gray-900 py-2 rounded-xl font-semibold text-sm transition-colors duration-200"
+                                                        >
+                                                            Confirmar
+                                                        </button>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ))
+                                    ) : (
+                                        <div className="md:col-span-2 lg:col-span-3 xl:col-span-4 text-center text-white/50 py-16">
+                                            <div className="text-6xl mb-4">🪐</div>
+                                            <div>No se encontraron tripulantes con el nombre: "{searchTerm}"</div>
+                                        </div>
+                                    )}
+                                </div>
+                            </>
+                        )}
+
+
+                        {/* Footer */}
+                        <div className="text-center mt-8 text-white/60">
+                            <p>🚀 Calidero Espacial - Bitácora de Vuelo</p>
+                            <p className="text-sm">Datos sincronizados en **Tiempo Real** con Firebase Cloud Firestore.</p>
+                            <p className="text-xs mt-1">ID de Usuario: {userId}</p>
+                        </div>
+                    </div>
+                
+                    {/* ========================================================== */}
+                    {/* MODALES */}
+                    {/* ========================================================== */}
+                    {showPasswordModal && (
+                        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+                            <div className="bg-white rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl text-center">
+                                <div className="text-6xl mb-4">👨‍🏫</div>
+                                <h3 className="text-2xl font-bold text-gray-800 mb-6">Acceso de Comandante</h3>
+                                {loginError && (
+                                    <div className="text-red-600 text-sm bg-red-50 border border-red-200 p-3 rounded-lg mb-4">
+                                        ❌ {loginError}
+                                    </div>
+                                )}
+                                <input
+                                    type="password"
+                                    placeholder="Contraseña de Profesor"
+                                    value={teacherPassword}
+                                    onChange={(e) => setTeacherPassword(e.target.value)}
+                                    onKeyPress={(e) => e.key === 'Enter' && handleTeacherLogin()}
+                                    className="w-full px-4 py-3 mb-4 text-lg rounded-xl border-2 border-gray-300 focus:outline-none focus:border-orange-500"
+                                />
+                                <div className="flex gap-3">
+                                    <button
+                                        onClick={handleTeacherLogin}
+                                        className="flex-1 bg-orange-500 hover:bg-orange-600 text-white py-3 rounded-xl font-semibold transition-colors duration-200 text-lg"
+                                    >
+                                        ✅ Ingresar
+                                    </button>
+                                    <button
+                                        onClick={() => { setShowPasswordModal(false); setTeacherPassword(''); setLoginError(''); }}
+                                        className="flex-1 bg-gray-500 hover:bg-gray-600 text-white py-3 rounded-xl font-semibold transition-colors duration-200 text-lg"
+                                    >
+                                        ❌ Cancelar
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {showStudentLoginModal && (
+                        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+                            <div className="bg-white rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl text-center">
+                                <div className="text-6xl mb-4">🛰️</div>
+                                <h3 className="text-2xl font-bold text-gray-800 mb-6">Acceso de Tripulante</h3>
+                                
+                                {/* Opción 1: Escanear QR */}
+                                <button
+                                    onClick={() => { 
+                                        setShowStudentLoginModal(false); 
+                                        setShowQRScannerModal(true);
+                                        setQrError('');
+                                    }}
+                                    className="w-full bg-cyan-500 hover:bg-cyan-600 text-white py-4 rounded-xl font-bold transition-colors duration-200 text-xl mb-4 flex items-center justify-center gap-3"
+                                >
+                                    <span className="text-3xl">📸</span> ESCANEAR CÓDIGO QR
+                                </button>
+                                
+                                <div className="text-gray-500 mb-4 font-bold">--- O ---</div>
+
+                                {/* Opción 2: Ingreso por Código (el método anterior) */}
+                                <input
+                                    type="text"
+                                    placeholder="Ingresa tu Código QR (Ej: STU-123ABC)"
+                                    value={studentQrCode}
+                                    onChange={(e) => setStudentQrCode(e.target.value.toUpperCase())}
+                                    onKeyPress={(e) => e.key === 'Enter' && handleStudentLogin(null)}
+                                    className="w-full px-4 py-3 mb-4 text-lg rounded-xl border-2 border-gray-300 focus:outline-none focus:border-cyan-500"
+                                />
+                                {qrError && (
+                                    <div className="text-red-600 text-sm bg-red-50 border border-red-200 p-3 rounded-lg mb-4 text-center">
+                                        ❌ {qrError}
+                                    </div>
+                                )}
+                                <div className="flex gap-3">
+                                    <button
+                                        onClick={() => handleStudentLogin(null)}
+                                        className="flex-1 bg-indigo-500 hover:bg-indigo-600 text-white py-3 rounded-xl font-semibold transition-colors duration-200 text-lg"
+                                    >
+                                        🚀 Iniciar Vuelo
+                                    </button>
+                                    <button
+                                        onClick={() => { setShowStudentLoginModal(false); setStudentQrCode(''); setQrError(''); }}
+                                        className="flex-1 bg-gray-500 hover:bg-gray-600 text-white py-3 rounded-xl font-semibold transition-colors duration-200 text-lg"
+                                    >
+                                        ❌ Cancelar
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                    
+                    {showQRScannerModal && (
+                        <QRScannerModal 
+                            onScanSuccess={handleScanSuccess} 
+                            onClose={() => setShowQRScannerModal(false)}
+                        />
+                    )}
+
+                    {showGlobalHistoryModal && (
+                        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+                            <div className="bg-white rounded-2xl p-8 max-w-4xl w-full mx-4 shadow-2xl">
+                                <h3 className="text-3xl font-bold text-gray-800 mb-6 text-center">📜 Bitácora de Misión Global</h3>
+                                <div className="max-h-[70vh] overflow-y-auto space-y-3 mb-6">
+                                    {transactions.length > 0 ? transactions.map((transaction) => (
+                                        <div key={transaction.firebaseId} className="bg-gray-50 rounded-xl p-4 border border-gray-200">
+                                            <div className="flex justify-between items-center">
+                                                <div className="flex-1 min-w-0 pr-4">
+                                                    <div className="text-gray-800 font-medium truncate">{transaction.reason}</div>
+                                                    <div className="text-gray-500 text-sm">
+                                                        {transaction.studentName || `ID: ${transaction.studentId}`} - {transaction.timestamp}
+                                                    </div>
+                                                </div>
+                                                <div className={`text-xl font-bold ${transaction.amount > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                                    {transaction.amount > 0 ? '+' : ''}${transaction.amount}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )) : (
+                                        <div className="text-center text-gray-400 py-8">
+                                            <div className="text-4xl mb-2">🔭</div>
+                                            <div>No hay transacciones registradas</div>
+                                        </div>
+                                    )}
+                                </div>
+                                <button onClick={() => setShowGlobalHistoryModal(false)} className="w-full bg-gray-500 hover:bg-gray-600 text-white py-3 rounded-xl font-semibold transition-colors duration-200 text-lg" > ❌ Cerrar </button>
+                            </div>
+                        </div>
+                    )}
+                    
+                    {showAddStudentModal && (
+                        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+                            <div className="bg-white rounded-2xl p-8 max-w-md w-full mx-4 shadow-2xl">
+                                <div className="text-center mb-6">
+                                    <div className="text-6xl mb-4">👨‍🚀</div>
+                                    <h3 className="text-2xl font-bold text-gray-800">Alistar Nuevo Tripulante</h3>
+                                    <p className="text-gray-600 mt-2">Completa la información para asignar su código de vuelo</p>
+                                </div>
+                                <div className="space-y-4">
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-2">Nombre Completo</label>
+                                        <input
+                                            type="text"
+                                            placeholder="APELLIDO PATERNO APELLIDO MATERNO NOMBRES"
+                                            value={newStudentName}
+                                            onChange={(e) => setNewStudentName(e.target.value)}
+                                            className="w-full px-4 py-3 text-lg rounded-xl border-2 border-gray-300 focus:outline-none focus:border-green-500"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-2">Avatar</label>
+                                        <select
+                                            value={newStudentAvatar}
+                                            onChange={(e) => setNewStudentAvatar(e.target.value)}
+                                            className="w-full px-4 py-3 text-lg rounded-xl border-2 border-gray-300 focus:outline-none focus:border-green-500 appearance-none bg-white"
+                                        >
+                                            <option value="👨‍🚀">👨‍🚀 Astronauta Hombre</option>
+                                            <option value="👩‍🚀">👩‍🚀 Astronauta Mujer</option>
+                                            <option value="🤖">🤖 Robot</option>
+                                            <option value="👽">👽 Extraterrestre</option>
+                                            <option value="🚀">🚀 Nave Espacial</option>
+                                            <option value="🌟">🌟 Estrella</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div className="flex gap-3 mt-6">
+                                    <button
+                                        onClick={addNewStudent}
+                                        disabled={!newStudentName.trim()}
+                                        className="flex-1 bg-green-500 hover:bg-green-600 text-white py-3 rounded-xl font-semibold transition-colors duration-200 text-lg disabled:bg-gray-400"
+                                    >
+                                        🚀 Alistar
+                                    </button>
+                                    <button
+                                        onClick={() => { setShowAddStudentModal(false); setNewStudentName(''); setNewStudentAvatar('👨‍🚀'); }}
+                                        className="flex-1 bg-gray-500 hover:bg-gray-600 text-white py-3 rounded-xl font-semibold transition-colors duration-200 text-lg"
+                                    >
+                                        ❌ Cancelar
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {showTeacherQrModal && selectedStudent && isTeacherMode && (
+                        <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50">
+                            <div className="bg-white rounded-2xl p-8 max-w-sm w-full mx-4 shadow-2xl text-center">
+                                <h3 className="text-2xl font-bold text-gray-800 mb-2">Código QR de Acceso</h3>
+                                <p className="text-gray-600 mb-6">Tripulante: **{selectedStudent.name}**.</p>
+                                
+                                <div className="flex justify-center mb-6">
+                                    <QRCodeDisplay value={selectedStudent.qrCode} size={256} />
+                                </div>
+
+                                <div className="text-xl font-mono bg-gray-100 p-3 rounded-xl border-dashed border-2 border-gray-300 mb-6">
+                                    {selectedStudent.qrCode}
+                                </div>
+
+                                <button 
+                                    onClick={() => {setShowTeacherQrModal(false); setSelectedStudent(null);}}
+                                    className="w-full mt-2 bg-gray-500 hover:bg-gray-600 text-white py-3 rounded-xl font-semibold transition-colors duration-200 text-lg"
+                                >
+                                    ❌ Cerrar
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* MODAL DE BIENVENIDA (SUCCESS SCREEN) */}
+                    {welcomeData && (
+                        <div className="fixed inset-0 bg-black/95 flex flex-col items-center justify-center p-4 z-[60] animate-fadeIn">
+                            <div className="text-center">
+                                <div className="text-9xl mb-6 animate-float inline-block filter drop-shadow-[0_0_20px_rgba(34,211,238,0.5)]">
+                                    {welcomeData.avatar}
+                                </div>
+                                <h2 className="text-5xl md:text-6xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-green-400 via-cyan-400 to-blue-500 mb-6 tracking-tight">
+                                    ¡BIENVENIDO!
+                                </h2>
+                                <h3 className="text-3xl md:text-5xl text-white font-bold mb-8 animate-pulse">
+                                    {welcomeData.name}
+                                </h3>
+                                <div className="flex items-center justify-center gap-3 text-white/60 text-xl">
+                                    <span className="animate-spin">⚙️</span>
+                                    <span>Iniciando sistemas de vuelo...</span>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                </div>
+            );
+        };
+
+        // Uso de createRoot para React 18
+        const container = document.getElementById('root');
+        const root = ReactDOM.createRoot(container);
+        root.render(<CalideroElectronico />);
+    </script>
+</body>
+</html>
